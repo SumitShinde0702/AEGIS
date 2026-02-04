@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, StopCircle, Loader2, Bot, Code, Shield, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
-import { generateWorkerPhase, generateCodeReview, auditThoughtSignature, generateWorkerResponse } from '../services/multiAgentService';
+import { Play, StopCircle, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { generateWorkerPhase, generateCodeReview, auditThoughtSignature, generateWorkerResponse, revisePhaseOutput } from '../services/multiAgentService';
+import BoardView from './BoardView';
 import { MarathonTask, TaskPhase, AgentMessage, AuditVerdict } from '../types';
 
 const TASK_PHASES = [
@@ -24,7 +25,16 @@ const MarathonAgent: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const addMessage = (agent: 'WORKER' | 'CODE_REVIEW' | 'AUDIT', text: string, thoughtTrace?: string, phase?: number) => {
+  const addMessage = (
+    agent: 'WORKER' | 'CODE_REVIEW' | 'AUDIT',
+    text: string,
+    thoughtTrace?: string,
+    phase?: number,
+    respondsTo?: string,
+    isRevision?: boolean,
+    originalMessageId?: string,
+    changes?: string
+  ) => {
     setMessages(prev => [...prev, {
       id: Date.now().toString() + Math.random(),
       agent,
@@ -32,6 +42,10 @@ const MarathonAgent: React.FC = () => {
       thoughtTrace,
       timestamp: Date.now(),
       phase,
+      respondsTo,
+      isRevision,
+      originalMessageId,
+      changes,
     }]);
   };
 
@@ -86,8 +100,6 @@ const MarathonAgent: React.FC = () => {
     updatedPhases[phaseIndex] = { ...updatedPhases[phaseIndex], status: 'IN_PROGRESS' };
     setCurrentTask({ ...task, phases: updatedPhases, currentPhase: phaseIndex });
 
-    addMessage('WORKER', `Starting Phase ${phase.number}: ${phase.name}...`, undefined, phase.number);
-
     const previousPhases = task.phases.slice(0, phaseIndex);
     
     const allPreviousMessages = messages.filter(m => 
@@ -128,6 +140,7 @@ const MarathonAgent: React.FC = () => {
 
     if (!isRunningRef.current) return;
 
+    const workerMessageId = Date.now().toString() + Math.random();
     addMessage('WORKER', workerResponse.text, workerResponse.thoughtTrace, phase.number);
 
     updatedPhases[phaseIndex] = {
@@ -147,10 +160,13 @@ const MarathonAgent: React.FC = () => {
 
     if (!isRunningRef.current) return;
 
-    addMessage('CODE_REVIEW', codeReviewResponse.text, undefined, phase.number);
+    const codeReviewMessageId = Date.now().toString() + Math.random();
+    addMessage('CODE_REVIEW', codeReviewResponse.text, undefined, phase.number, workerMessageId);
     
+    let questionMessageId: string | undefined;
     if (codeReviewResponse.question) {
-      addMessage('CODE_REVIEW', `Question: ${codeReviewResponse.question}`, undefined, phase.number);
+      questionMessageId = Date.now().toString() + Math.random();
+      addMessage('CODE_REVIEW', `Question: ${codeReviewResponse.question}`, undefined, phase.number, codeReviewMessageId);
       
       await new Promise(r => setTimeout(r, 500));
       
@@ -164,7 +180,8 @@ const MarathonAgent: React.FC = () => {
 
       if (!isRunningRef.current) return;
 
-      addMessage('WORKER', `[Answering Code Review] ${workerAnswer.text}`, workerAnswer.thoughtTrace, phase.number);
+      const answerMessageId = Date.now().toString() + Math.random();
+      addMessage('WORKER', `[Answering Code Review] ${workerAnswer.text}`, workerAnswer.thoughtTrace, phase.number, questionMessageId);
       
       if (workerAnswer.thoughtTrace) {
         updatedPhases[phaseIndex] = {
@@ -173,6 +190,47 @@ const MarathonAgent: React.FC = () => {
         };
         setCurrentTask({ ...task, phases: updatedPhases });
       }
+    }
+
+    // REVISION LOOP: Revise based on Code Review feedback
+    const suggestions = codeReviewResponse.text
+      .split('\n')
+      .filter(line => line.trim().length > 0 && !line.includes('Question:'))
+      .map(line => line.trim());
+
+    if (suggestions.length > 0) {
+      await new Promise(r => setTimeout(r, 500));
+      
+      const revision = await revisePhaseOutput(
+        task.description,
+        phase.name,
+        workerResponse.text,
+        workerResponse.thoughtTrace || '',
+        codeReviewResponse.text,
+        suggestions
+      );
+
+      if (!isRunningRef.current) return;
+
+      // Show original and revised side-by-side
+      const revisionMessageId = Date.now().toString() + Math.random();
+      addMessage(
+        'WORKER',
+        revision.revisedOutput,
+        revision.revisedThoughtTrace,
+        phase.number,
+        codeReviewMessageId,
+        true, // isRevision
+        workerMessageId, // originalMessageId
+        revision.changes
+      );
+
+      // Update phase with revised thought trace
+      updatedPhases[phaseIndex] = {
+        ...updatedPhases[phaseIndex],
+        workerThoughtTrace: revision.revisedThoughtTrace,
+      };
+      setCurrentTask({ ...task, phases: updatedPhases });
     }
 
     updatedPhases[phaseIndex] = {
@@ -196,7 +254,9 @@ const MarathonAgent: React.FC = () => {
       ? `✓ VERIFIED (Score: ${auditResult.score}/100)`
       : `✗ ${auditResult.verdict} (Score: ${auditResult.score}/100)`;
 
-    addMessage('AUDIT', `${verdictText}\n${auditResult.analysis}`, undefined, phase.number);
+    const auditMessageId = Date.now().toString() + Math.random();
+    const lastCodeReviewId = messages.filter(m => m.agent === 'CODE_REVIEW' && m.phase === phase.number).slice(-1)[0]?.id;
+    addMessage('AUDIT', `${verdictText}\n${auditResult.analysis}`, undefined, phase.number, lastCodeReviewId || codeReviewMessageId);
 
     updatedPhases[phaseIndex] = {
       ...updatedPhases[phaseIndex],
@@ -232,7 +292,8 @@ const MarathonAgent: React.FC = () => {
 
       if (!isRunningRef.current) return;
 
-      addMessage('WORKER', `[RETRY] ${retryResponse.text}`, retryResponse.thoughtTrace, phase.number);
+      const retryMessageId = Date.now().toString() + Math.random();
+      addMessage('WORKER', `[RETRY] ${retryResponse.text}`, retryResponse.thoughtTrace, phase.number, auditMessageId, true, workerMessageId);
 
       const retryAudit = await auditThoughtSignature(
         task.description,
@@ -247,7 +308,8 @@ const MarathonAgent: React.FC = () => {
         ? `✓ VERIFIED after correction (Score: ${retryAudit.score}/100)`
         : `✗ Still ${retryAudit.verdict} (Score: ${retryAudit.score}/100)`;
 
-      addMessage('AUDIT', `${retryVerdictText}\n${retryAudit.analysis}`, undefined, phase.number);
+      const retryAuditMessageId = Date.now().toString() + Math.random();
+      addMessage('AUDIT', `${retryVerdictText}\n${retryAudit.analysis}`, undefined, phase.number, retryMessageId);
 
       updatedPhases[phaseIndex] = {
         ...updatedPhases[phaseIndex],
@@ -329,82 +391,8 @@ const MarathonAgent: React.FC = () => {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <div className="bg-aegis-panel border border-aegis-border rounded-lg p-6 flex flex-col h-[calc(100vh-16rem)]">
-          <div className="flex items-center gap-2 mb-4 border-b border-aegis-border pb-4">
-            <Bot className="text-blue-500" size={20} />
-            <h3 className="font-bold text-white">Worker Agent</h3>
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-3">
-            {messages.filter(m => m.agent === 'WORKER').map((msg) => (
-              <div key={msg.id} className="bg-blue-500/10 border border-blue-500/30 rounded p-3">
-                {msg.thoughtTrace && (
-                  <div className="mb-2 text-xs font-mono text-gray-400 italic border-l-2 border-blue-500/50 pl-2">
-                    {msg.thoughtTrace}
-                  </div>
-                )}
-                <p className="text-sm text-gray-200">{msg.message}</p>
-                <p className="text-xs text-gray-500 mt-1">Phase {msg.phase}</p>
-              </div>
-            ))}
-            {isRunning && messages.filter(m => m.agent === 'WORKER').length === 0 && (
-              <div className="flex items-center gap-2 text-gray-500">
-                <Loader2 className="animate-spin" size={16} />
-                <span className="text-sm">Worker thinking...</span>
-              </div>
-            )}
-            <div ref={messagesEndRef} />
-          </div>
-        </div>
-
-        <div className="bg-aegis-panel border border-aegis-border rounded-lg p-6 flex flex-col h-[calc(100vh-16rem)]">
-          <div className="flex items-center gap-2 mb-4 border-b border-aegis-border pb-4">
-            <Code className="text-purple-500" size={20} />
-            <h3 className="font-bold text-white">Code Review Agent</h3>
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-3">
-            {messages.filter(m => m.agent === 'CODE_REVIEW').map((msg) => (
-              <div key={msg.id} className="bg-purple-500/10 border border-purple-500/30 rounded p-3">
-                <p className="text-sm text-gray-200">{msg.message}</p>
-                <p className="text-xs text-gray-500 mt-1">Phase {msg.phase}</p>
-              </div>
-            ))}
-            {isRunning && messages.filter(m => m.agent === 'CODE_REVIEW').length === 0 && (
-              <div className="flex items-center gap-2 text-gray-500">
-                <Loader2 className="animate-spin" size={16} />
-                <span className="text-sm">Waiting for worker...</span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-aegis-panel border border-aegis-border rounded-lg p-6 flex flex-col h-[calc(100vh-16rem)]">
-          <div className="flex items-center gap-2 mb-4 border-b border-aegis-border pb-4">
-            <Shield className="text-green-500" size={20} />
-            <h3 className="font-bold text-white">Audit Agent (AEGIS)</h3>
-          </div>
-          <div className="flex-1 overflow-y-auto space-y-3">
-            {messages.filter(m => m.agent === 'AUDIT').map((msg) => (
-              <div
-                key={msg.id}
-                className={`rounded p-3 border ${
-                  msg.message.includes('VERIFIED')
-                    ? 'bg-green-500/10 border-green-500/30'
-                    : 'bg-red-500/10 border-red-500/30'
-                }`}
-              >
-                <p className="text-sm text-gray-200 whitespace-pre-wrap">{msg.message}</p>
-                <p className="text-xs text-gray-500 mt-1">Phase {msg.phase}</p>
-              </div>
-            ))}
-            {isRunning && messages.filter(m => m.agent === 'AUDIT').length === 0 && (
-              <div className="flex items-center gap-2 text-gray-500">
-                <Loader2 className="animate-spin" size={16} />
-                <span className="text-sm">Waiting for thought signature...</span>
-              </div>
-            )}
-          </div>
-        </div>
+      <div className="bg-aegis-panel border border-aegis-border rounded-lg overflow-hidden h-[calc(100vh-16rem)]">
+        <BoardView messages={messages} currentPhase={currentPhaseIndex + 1} />
       </div>
     </div>
   );

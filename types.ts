@@ -74,4 +74,8 @@ export interface AgentMessage {
   thoughtTrace?: string;
   timestamp: number;
   phase?: number;
+  respondsTo?: string; // ID of message this responds to
+  isRevision?: boolean;
+  originalMessageId?: string; // For revision cards
+  changes?: string; // Highlighted changes in revision
 }

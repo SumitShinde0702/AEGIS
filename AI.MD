@@ -321,23 +321,48 @@ HEDERA_NETWORK=testnet
    - `auditThoughtSignature()`: Audit Agent (AEGIS) verifies reasoning quality
    - All use Gemini 3 Pro Preview with structured JSON output
 
-2. **`components/MarathonAgent.tsx`** (NEW)
-   - Three-panel layout: Worker | Code Review | Audit
+2. **`components/MarathonAgent.tsx`** (UPDATED)
+   - Board-based view with linked cards
    - Task input field for human-provided tasks
    - Phase progress tracking with status indicators
    - Real-time message streaming
    - Self-correction loop on audit rejection
+   - Revision loop after Code Review feedback
+   - Message relationship tracking (respondsTo)
    - Clean, efficient state management
 
-3. **`types.ts`** (UPDATED)
+3. **`components/BoardView.tsx`** (NEW)
+   - Single vertical board layout
+   - Phase headers with dividers
+   - Message tree rendering with connections
+   - Visual dotted lines and arrows between related cards
+   - Side-by-side display for original vs revised cards
+
+4. **`components/MessageCard.tsx`** (NEW)
+   - Expandable cards with details
+   - Inline and expandable thought traces
+   - Color-coded by agent type (Worker=blue, Code Review=purple, Audit=green)
+   - Revision indicators with green highlights
+   - Connection lines and arrows
+   - Shows message relationships
+
+5. **`types.ts`** (UPDATED)
    - Added `TaskPhase` interface
    - Added `MarathonTask` interface
-   - Added `AgentMessage` interface
+   - Extended `AgentMessage` interface with:
+     - `respondsTo`: Track message relationships
+     - `isRevision`: Flag for revision cards
+     - `originalMessageId`: Link to original message
+     - `changes`: Highlighted changes in revisions
 
-4. **`App.tsx`** (UPDATED)
+6. **`services/multiAgentService.ts`** (UPDATED)
+   - Added `revisePhaseOutput()`: Worker revises output based on feedback
+   - Returns revised output, thought trace, and change summary
+
+7. **`App.tsx`** (UPDATED)
    - Added 'marathon' case to render MarathonAgent component
 
-5. **`components/Sidebar.tsx`** (UPDATED)
+8. **`components/Sidebar.tsx`** (UPDATED)
    - Added 'Marathon Agent' menu item with Rocket icon
 
 ### Key Features Implemented
@@ -349,6 +374,12 @@ HEDERA_NETWORK=testnet
 - ✅ **Self-Correction**: Worker automatically retries with improved reasoning on rejection
 - ✅ **Code Review Integration**: Code Review Agent provides feedback before audit
 - ✅ **Question & Answer Flow**: Worker responds to Code Review questions within the same phase
+- ✅ **Revision Loop**: Worker revises output based on Code Review feedback (NEW)
+- ✅ **Side-by-Side Revisions**: Original and revised cards shown side-by-side with green highlights (NEW)
+- ✅ **Board-Based UI**: Single vertical board with linked cards showing conversation flow (NEW)
+- ✅ **Visual Connections**: Dotted lines and arrows connecting related messages (NEW)
+- ✅ **Expandable Cards**: Cards expand to show details and thought traces (NEW)
+- ✅ **Phase Separation**: Clear phase headers and dividers (NEW)
 - ✅ **Suggestion Incorporation**: Worker incorporates Code Review suggestions into next phase
 - ✅ **Visual Feedback**: Color-coded phase status, verdict icons, thought trace display
 

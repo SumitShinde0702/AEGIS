@@ -114,6 +114,59 @@ Return JSON with text (your answer) and optionally thoughtTrace (updated reasoni
   }
 };
 
+export const revisePhaseOutput = async (
+  taskDescription: string,
+  phaseName: string,
+  originalOutput: string,
+  originalThoughtTrace: string,
+  feedback: string,
+  suggestions: string[]
+): Promise<{ revisedOutput: string; revisedThoughtTrace: string; changes: string }> => {
+  const prompt = `You are a Worker Agent revising your work based on feedback.
+
+Task: ${taskDescription}
+Phase: ${phaseName}
+Original Output: ${originalOutput}
+Original Thought Trace: ${originalThoughtTrace}
+Feedback: ${feedback}
+${suggestions.length > 0 ? `Suggestions:\n${suggestions.map((s, i) => `${i + 1}. ${s}`).join('\n')}` : ''}
+
+Revise your output to incorporate the feedback and suggestions. Show what changed.
+
+Return JSON with:
+- revisedOutput: The updated output
+- revisedThoughtTrace: Updated reasoning
+- changes: A brief summary of what changed (highlight key improvements)`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: MODEL,
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            revisedOutput: { type: Type.STRING },
+            revisedThoughtTrace: { type: Type.STRING },
+            changes: { type: Type.STRING },
+          },
+          required: ["revisedOutput", "revisedThoughtTrace", "changes"],
+        },
+      },
+    });
+
+    return JSON.parse(response.text || "{}");
+  } catch (error) {
+    console.error("Revision Error:", error);
+    return {
+      revisedOutput: originalOutput,
+      revisedThoughtTrace: originalThoughtTrace,
+      changes: "Revision failed",
+    };
+  }
+};
+
 export const generateCodeReview = async (
   taskDescription: string,
   phaseName: string,
