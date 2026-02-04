@@ -46,3 +46,32 @@ export interface Transaction {
   timestamp: number;
   status: 'CONFIRMED' | 'PENDING' | 'FAILED';
 }
+
+export interface TaskPhase {
+  phaseNumber: number;
+  name: string;
+  status: 'PENDING' | 'IN_PROGRESS' | 'VERIFIED' | 'REJECTED';
+  workerThoughtTrace?: string;
+  codeReviewFeedback?: string;
+  auditVerdict?: AuditVerdict;
+  auditScore?: number;
+  timestamp: number;
+}
+
+export interface MarathonTask {
+  id: string;
+  description: string;
+  phases: TaskPhase[];
+  currentPhase: number;
+  status: 'PENDING' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED';
+  createdAt: number;
+}
+
+export interface AgentMessage {
+  id: string;
+  agent: 'WORKER' | 'CODE_REVIEW' | 'AUDIT';
+  message: string;
+  thoughtTrace?: string;
+  timestamp: number;
+  phase?: number;
+}

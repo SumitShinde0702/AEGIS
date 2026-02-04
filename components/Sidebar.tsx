@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, ShieldCheck, Activity, Database, Settings } from 'lucide-react';
+import { LayoutDashboard, ShieldCheck, Activity, Database, Rocket } from 'lucide-react';
 
 interface SidebarProps {
   activeTab: string;
@@ -9,6 +9,7 @@ interface SidebarProps {
 const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab }) => {
   const menuItems = [
     { id: 'dashboard', icon: LayoutDashboard, label: 'Command Center' },
+    { id: 'marathon', icon: Rocket, label: 'Marathon Agent' },
     { id: 'audit', icon: ShieldCheck, label: 'Cognitive Audit' },
     { id: 'ledger', icon: Database, label: 'Immutable Ledger' },
     { id: 'network', icon: Activity, label: 'A2A Network' },

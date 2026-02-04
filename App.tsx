@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './pages/Dashboard';
+import MarathonAgent from './components/MarathonAgent';
 import AuditTerminal from './components/AuditTerminal';
 import LedgerTable from './components/LedgerTable';
 import A2AMonitor from './components/A2AMonitor';
@@ -12,6 +13,8 @@ const App: React.FC = () => {
     switch (activeTab) {
       case 'dashboard':
         return <Dashboard />;
+      case 'marathon':
+        return <MarathonAgent />;
       case 'audit':
         return <AuditTerminal />;
       case 'ledger':
