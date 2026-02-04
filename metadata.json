@@ -1,0 +1,5 @@
+{
+  "name": "AEGIS Commander",
+  "description": "The command center for the Agentic Economy Governance & Integrity System. Visualizes A2A handshakes, performs real-time Cognitive Audits using Gemini 3 Pro, and tracks HBAR settlement on the immutable ledger.",
+  "requestFramePermissions": []
+}
