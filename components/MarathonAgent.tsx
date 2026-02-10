@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Play, StopCircle, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { generateWorkerPhase, generateCodeReview, auditThoughtSignature, generateWorkerResponse, revisePhaseOutput } from '../services/multiAgentService';
+import { contextManager } from '../services/contextManager';
 import BoardView from './BoardView';
+import ExportButton from './ExportButton';
 import { MarathonTask, TaskPhase, AgentMessage, AuditVerdict } from '../types';
 
 const TASK_PHASES = [
@@ -34,9 +36,10 @@ const MarathonAgent: React.FC = () => {
     isRevision?: boolean,
     originalMessageId?: string,
     changes?: string
-  ) => {
+  ): string => {
+    const messageId = Date.now().toString() + Math.random();
     setMessages(prev => [...prev, {
-      id: Date.now().toString() + Math.random(),
+      id: messageId,
       agent,
       message: text,
       thoughtTrace,
@@ -47,6 +50,7 @@ const MarathonAgent: React.FC = () => {
       originalMessageId,
       changes,
     }]);
+    return messageId;
   };
 
   const startTask = async () => {
@@ -135,13 +139,16 @@ const MarathonAgent: React.FC = () => {
       phase.name,
       previousPhases,
       combinedFeedback || undefined,
-      pendingQuestions.length > 0 ? pendingQuestions : undefined
+      pendingQuestions.length > 0 ? pendingQuestions : undefined,
+      task.id
     );
+
+    // Update task memory with new context
+    await contextManager.updateTaskMemory(task.id, task.description, updatedPhases, messages);
 
     if (!isRunningRef.current) return;
 
-    const workerMessageId = Date.now().toString() + Math.random();
-    addMessage('WORKER', workerResponse.text, workerResponse.thoughtTrace, phase.number);
+    const workerMessageId = addMessage('WORKER', workerResponse.text, workerResponse.thoughtTrace, phase.number);
 
     updatedPhases[phaseIndex] = {
       ...updatedPhases[phaseIndex],
@@ -151,22 +158,23 @@ const MarathonAgent: React.FC = () => {
 
     await new Promise(r => setTimeout(r, 500));
 
+    // Filter messages to only current phase to prevent context contamination
+    const currentPhaseMessages = messages.filter(m => m.phase === phase.number);
+    
     const codeReviewResponse = await generateCodeReview(
       task.description,
       phase.name,
       workerResponse.thoughtTrace || '',
-      messages
+      currentPhaseMessages
     );
 
     if (!isRunningRef.current) return;
 
-    const codeReviewMessageId = Date.now().toString() + Math.random();
-    addMessage('CODE_REVIEW', codeReviewResponse.text, undefined, phase.number, workerMessageId);
+    const codeReviewMessageId = addMessage('CODE_REVIEW', codeReviewResponse.text, undefined, phase.number, workerMessageId);
     
     let questionMessageId: string | undefined;
     if (codeReviewResponse.question) {
-      questionMessageId = Date.now().toString() + Math.random();
-      addMessage('CODE_REVIEW', `Question: ${codeReviewResponse.question}`, undefined, phase.number, codeReviewMessageId);
+      questionMessageId = addMessage('CODE_REVIEW', `Question: ${codeReviewResponse.question}`, undefined, phase.number, codeReviewMessageId);
       
       await new Promise(r => setTimeout(r, 500));
       
@@ -175,13 +183,12 @@ const MarathonAgent: React.FC = () => {
         phase.name,
         codeReviewResponse.question,
         workerResponse.thoughtTrace || '',
-        messages
+        currentPhaseMessages
       );
 
       if (!isRunningRef.current) return;
 
-      const answerMessageId = Date.now().toString() + Math.random();
-      addMessage('WORKER', `[Answering Code Review] ${workerAnswer.text}`, workerAnswer.thoughtTrace, phase.number, questionMessageId);
+      const answerMessageId = addMessage('WORKER', `[Answering Code Review] ${workerAnswer.text}`, workerAnswer.thoughtTrace, phase.number, questionMessageId);
       
       if (workerAnswer.thoughtTrace) {
         updatedPhases[phaseIndex] = {
@@ -213,8 +220,7 @@ const MarathonAgent: React.FC = () => {
       if (!isRunningRef.current) return;
 
       // Show original and revised side-by-side
-      const revisionMessageId = Date.now().toString() + Math.random();
-      addMessage(
+      const revisionMessageId = addMessage(
         'WORKER',
         revision.revisedOutput,
         revision.revisedThoughtTrace,
@@ -254,9 +260,9 @@ const MarathonAgent: React.FC = () => {
       ? `✓ VERIFIED (Score: ${auditResult.score}/100)`
       : `✗ ${auditResult.verdict} (Score: ${auditResult.score}/100)`;
 
-    const auditMessageId = Date.now().toString() + Math.random();
-    const lastCodeReviewId = messages.filter(m => m.agent === 'CODE_REVIEW' && m.phase === phase.number).slice(-1)[0]?.id;
-    addMessage('AUDIT', `${verdictText}\n${auditResult.analysis}`, undefined, phase.number, lastCodeReviewId || codeReviewMessageId);
+    // Use the most recent Code Review message ID (question if exists, otherwise feedback)
+    const auditRespondsTo = questionMessageId || codeReviewMessageId;
+    const auditMessageId = addMessage('AUDIT', `${verdictText}\n${auditResult.analysis}`, undefined, phase.number, auditRespondsTo);
 
     updatedPhases[phaseIndex] = {
       ...updatedPhases[phaseIndex],
@@ -292,8 +298,7 @@ const MarathonAgent: React.FC = () => {
 
       if (!isRunningRef.current) return;
 
-      const retryMessageId = Date.now().toString() + Math.random();
-      addMessage('WORKER', `[RETRY] ${retryResponse.text}`, retryResponse.thoughtTrace, phase.number, auditMessageId, true, workerMessageId);
+      const retryMessageId = addMessage('WORKER', `[RETRY] ${retryResponse.text}`, retryResponse.thoughtTrace, phase.number, auditMessageId, true, workerMessageId);
 
       const retryAudit = await auditThoughtSignature(
         task.description,
@@ -308,8 +313,7 @@ const MarathonAgent: React.FC = () => {
         ? `✓ VERIFIED after correction (Score: ${retryAudit.score}/100)`
         : `✗ Still ${retryAudit.verdict} (Score: ${retryAudit.score}/100)`;
 
-      const retryAuditMessageId = Date.now().toString() + Math.random();
-      addMessage('AUDIT', `${retryVerdictText}\n${retryAudit.analysis}`, undefined, phase.number, retryMessageId);
+      const retryAuditMessageId = addMessage('AUDIT', `${retryVerdictText}\n${retryAudit.analysis}`, undefined, phase.number, retryMessageId);
 
       updatedPhases[phaseIndex] = {
         ...updatedPhases[phaseIndex],
@@ -338,26 +342,29 @@ const MarathonAgent: React.FC = () => {
   return (
     <div className="space-y-6">
       <div className="bg-aegis-panel border border-aegis-border rounded-lg p-6">
-        <div className="flex items-center gap-4 mb-4">
+        <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-bold text-white">Marathon Agent System</h2>
-          {!isRunning ? (
-            <button
-              onClick={startTask}
-              disabled={!taskDescription.trim()}
-              className="flex items-center gap-2 px-4 py-2 rounded bg-hedera-accent text-black font-bold hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
-            >
-              <Play size={16} />
-              Start Task
-            </button>
-          ) : (
-            <button
-              onClick={stopTask}
-              className="flex items-center gap-2 px-4 py-2 rounded bg-red-500 text-white font-bold hover:bg-red-600 transition-all"
-            >
-              <StopCircle size={16} />
-              Stop
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {!isRunning ? (
+              <button
+                onClick={startTask}
+                disabled={!taskDescription.trim()}
+                className="flex items-center gap-2 px-4 py-2 rounded bg-hedera-accent text-black font-bold hover:bg-emerald-400 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+              >
+                <Play size={16} />
+                Start Task
+              </button>
+            ) : (
+              <button
+                onClick={stopTask}
+                className="flex items-center gap-2 px-4 py-2 rounded bg-red-500 text-white font-bold hover:bg-red-600 transition-all"
+              >
+                <StopCircle size={16} />
+                Stop
+              </button>
+            )}
+            <ExportButton messages={messages} task={currentTask} />
+          </div>
         </div>
 
         <textarea
@@ -391,7 +398,7 @@ const MarathonAgent: React.FC = () => {
         )}
       </div>
 
-      <div className="bg-aegis-panel border border-aegis-border rounded-lg overflow-hidden h-[calc(100vh-16rem)]">
+      <div className="bg-aegis-panel border border-aegis-border rounded-lg h-[calc(100vh-16rem)] overflow-visible">
         <BoardView messages={messages} currentPhase={currentPhaseIndex + 1} />
       </div>
     </div>

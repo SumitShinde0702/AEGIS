@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { Bot, Code, Shield, ChevronDown, ChevronUp, ArrowDown } from 'lucide-react';
-import { AgentMessage } from '../types';
+import { Bot, Code, Shield, ChevronDown, ChevronUp, ArrowDown, Brain } from 'lucide-react';
+import { AgentMessage, ThinkingLevel } from '../types';
 
 interface MessageCardProps {
   message: AgentMessage;

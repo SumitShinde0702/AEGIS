@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type } from "@google/genai";
-import { AuditVerdict, TaskPhase, AgentMessage } from "../types";
+import { AuditVerdict, TaskPhase, AgentMessage, ThinkingTrace } from "../types";
+import { contextManager } from "./contextManager";
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 const MODEL = "gemini-3-pro-preview";
@@ -8,6 +9,7 @@ interface AgentResponse {
   text: string;
   thoughtTrace?: string;
   question?: string;
+  thinkingLevels?: ThinkingTrace[];
 }
 
 export const generateWorkerPhase = async (
@@ -16,8 +18,14 @@ export const generateWorkerPhase = async (
   phaseName: string,
   previousPhases: TaskPhase[],
   feedback?: string,
-  pendingQuestions?: string[]
+  pendingQuestions?: string[],
+  taskId?: string
 ): Promise<AgentResponse> => {
+  // Get compressed context for long-running tasks
+  const compressedContext = taskId 
+    ? contextManager.getCompressedContext(taskId, phaseNumber)
+    : '';
+
   const history = previousPhases
     .map(p => `Phase ${p.phaseNumber} (${p.name}): ${p.workerThoughtTrace || 'Completed'}`)
     .join('\n');
@@ -26,18 +34,42 @@ export const generateWorkerPhase = async (
     ? `\n\nIMPORTANT - You have pending questions from Code Review Agent that you MUST answer:\n${pendingQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\nPlease address these questions in your response.`
     : '';
 
-  const prompt = `You are a Worker Agent executing a complex task.
+  // Generate thinking levels first
+  const thinkingLevels = await contextManager.generateThinkingLevels(
+    taskDescription,
+    phaseNumber,
+    phaseName,
+    compressedContext || history || taskDescription
+  );
+
+  const thinkingLevelsText = thinkingLevels.length > 0
+    ? `\n\nTHINKING LEVELS (Hierarchical Reasoning):\n${thinkingLevels.map(t => 
+        `[${t.level}] ${t.reasoning}${t.keyDecisions && t.keyDecisions.length > 0 ? `\nKey Decisions: ${t.keyDecisions.join(', ')}` : ''}`
+      ).join('\n\n')}`
+    : '';
+
+  const prompt = `You are a Worker Agent executing a complex, long-running task that may span hours or days.
 
 Task: ${taskDescription}
 Current Phase: ${phaseNumber} - ${phaseName}
+${compressedContext ? `Compressed Context (from previous phases):\n${compressedContext}\n` : ''}
 ${history ? `Previous Phases:\n${history}` : ''}
-${feedback ? `Feedback from other agents:\n${feedback}` : ''}${questionsText}
+${feedback ? `Feedback from other agents:\n${feedback}` : ''}${questionsText}${thinkingLevelsText}
+
+THINKING PROCESS:
+Use hierarchical reasoning:
+- STRATEGIC: Understand the big picture and long-term goals
+- TACTICAL: Plan your approach for this phase
+- OPERATIONAL: Execute specific actions
 
 Generate:
-1. Thought Trace: Your internal reasoning for this phase
+1. Thought Trace: Your detailed internal reasoning for this phase (incorporate the thinking levels above)
 2. Progress Update: What you're doing/planning${pendingQuestions && pendingQuestions.length > 0 ? '\n3. Answers to the questions asked (if any)' : ''}
 
-IMPORTANT: If there are suggestions or questions from Code Review, you MUST incorporate them into your approach. Show that you're listening and adapting.
+IMPORTANT: 
+- Maintain continuity with previous phases using the compressed context
+- If there are suggestions or questions from Code Review, you MUST incorporate them into your approach
+- Show that you're learning from past decisions and self-corrections
 
 Return JSON with thoughtTrace and text fields.`;
 
@@ -47,6 +79,8 @@ Return JSON with thoughtTrace and text fields.`;
       contents: prompt,
       config: {
         responseMimeType: "application/json",
+        // Note: Gemini 3 thinking tokens are automatically used for complex reasoning
+        // The model will internally "think" before responding for better quality
         responseSchema: {
           type: Type.OBJECT,
           properties: {
@@ -58,7 +92,11 @@ Return JSON with thoughtTrace and text fields.`;
       },
     });
 
-    return JSON.parse(response.text || "{}");
+    const result = JSON.parse(response.text || "{}");
+    return {
+      ...result,
+      thinkingLevels,
+    };
   } catch (error) {
     console.error("Worker Agent Error:", error);
     return { text: "Error generating response", thoughtTrace: "Error occurred" };
@@ -80,13 +118,17 @@ export const generateWorkerResponse = async (
 
   const prompt = `You are a Worker Agent. Code Review Agent has asked you a question.
 
+CRITICAL: The task is: "${taskDescription}"
+If the question from Code Review is about a topic unrelated to this task, you MUST point this out clearly and redirect to the actual task.
+
 Task: ${taskDescription}
 Current Phase: ${phaseName}
 Your Thought Trace: ${workerThoughtTrace}
 Question from Code Review: ${question}
 ${recentHistory ? `Recent Conversation:\n${recentHistory}` : ''}
 
-Answer the question directly and show how you will incorporate this into your work. Be collaborative and responsive.
+If the question is relevant to the task, answer it directly and show how you will incorporate this into your work.
+If the question is NOT relevant to "${taskDescription}", politely but clearly state that there appears to be a context error and redirect to the actual task.
 
 Return JSON with text (your answer) and optionally thoughtTrace (updated reasoning if applicable).`;
 
@@ -181,17 +223,22 @@ export const generateCodeReview = async (
 
   const prompt = `You are a Code Review Agent monitoring a Worker Agent.
 
-Task: ${taskDescription}
+CRITICAL: The task is: "${taskDescription}"
+You MUST stay strictly within this task context. Do NOT ask questions or provide feedback about unrelated topics.
+
 Current Phase: ${phaseName}
 Worker's Thought Trace: ${workerThoughtTrace}
 ${history ? `Recent Conversation:\n${history}` : ''}
 
 Analyze the Worker's reasoning and:
-1. Provide feedback on code quality, edge cases, or improvements
-2. Ask a clarifying question if needed
+1. Provide feedback on the quality, methodology, completeness, or improvements relevant to THE ACTUAL TASK
+2. Ask a clarifying question ONLY if it directly relates to the task: "${taskDescription}"
 3. Be collaborative and helpful
+4. CRITICAL: If the Worker mentions topics unrelated to the task, point this out. Do NOT ask questions about topics that are not part of the task description.
 
-Return JSON with text (your feedback) and optionally question (if you have one).`;
+IMPORTANT: Your questions and feedback must be directly relevant to "${taskDescription}". Do not hallucinate or infer different tasks.
+
+Return JSON with text (your feedback) and optionally question (if you have one that is directly relevant to the task).`;
 
   try {
     const response = await ai.models.generateContent({

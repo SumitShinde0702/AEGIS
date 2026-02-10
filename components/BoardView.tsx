@@ -1,5 +1,6 @@
 import React, { useRef, useEffect } from 'react';
-import MessageCard from './MessageCard';
+import CanvasView from './CanvasView';
+import PhaseColumn from './PhaseColumn';
 import { AgentMessage } from '../types';
 
 interface BoardViewProps {
@@ -9,13 +10,19 @@ interface BoardViewProps {
 
 const BoardView: React.FC<BoardViewProps> = ({ messages, currentPhase }) => {
   const boardEndRef = useRef<HTMLDivElement>(null);
-  const phaseGroups = new Map<number, AgentMessage[]>();
 
   useEffect(() => {
-    boardEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    // Only scroll if there are new messages, and use setTimeout to avoid blocking
+    if (messages.length > 0) {
+      const timer = setTimeout(() => {
+        boardEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [messages.length]);
 
-  // Group messages by phase
+  // Group messages by phase, then find root messages per phase
+  const phaseGroups = new Map<number, AgentMessage[]>();
   messages.forEach(msg => {
     const phase = msg.phase || 0;
     if (!phaseGroups.has(phase)) {
@@ -24,131 +31,104 @@ const BoardView: React.FC<BoardViewProps> = ({ messages, currentPhase }) => {
     phaseGroups.get(phase)!.push(msg);
   });
 
-  // Build message tree structure
-  const buildMessageTree = (phaseMessages: AgentMessage[]) => {
+  // Find root messages (Worker messages that don't respond to anything and aren't answers/retries)
+  const rootMessages = messages.filter(
+    msg => msg.agent === 'WORKER' && 
+           !msg.respondsTo && 
+           !msg.isRevision &&
+           !msg.message.includes('[Answering Code Review]') &&
+           !msg.message.includes('[RETRY]')
+  );
+
+  // Build thread for each root message
+  const buildThread = (rootId: string, phaseNum: number): AgentMessage[] => {
+    const thread: AgentMessage[] = [];
     const messageMap = new Map<string, AgentMessage>();
-    const rootMessages: AgentMessage[] = [];
-    const childrenMap = new Map<string, AgentMessage[]>();
-
-    // Create map of all messages
-    phaseMessages.forEach(msg => {
-      messageMap.set(msg.id, msg);
-      if (!childrenMap.has(msg.id)) {
-        childrenMap.set(msg.id, []);
+    const visited = new Set<string>();
+    const phaseMessages = phaseGroups.get(phaseNum) || [];
+    
+    // Create map of all messages in this phase
+    phaseMessages.forEach(msg => messageMap.set(msg.id, msg));
+    
+    // Recursively collect all messages in this thread
+    const collectMessages = (msgId: string) => {
+      if (visited.has(msgId)) return; // Prevent infinite loops
+      visited.add(msgId);
+      
+      const msg = messageMap.get(msgId);
+      if (msg) {
+        thread.push(msg);
+        // Find all messages that respond to this one (in same phase)
+        phaseMessages
+          .filter(m => m.respondsTo === msgId)
+          .forEach(child => collectMessages(child.id));
       }
-    });
-
-    // Build parent-child relationships
+    };
+    
+    collectMessages(rootId);
+    
+    // Also include any messages in this phase that should be linked but aren't
+    const linkedIds = new Set(thread.map(m => m.id));
     phaseMessages.forEach(msg => {
-      if (msg.respondsTo) {
-        const parent = messageMap.get(msg.respondsTo);
-        if (parent) {
-          if (!childrenMap.has(msg.respondsTo)) {
-            childrenMap.set(msg.respondsTo, []);
-          }
-          childrenMap.get(msg.respondsTo)!.push(msg);
-        } else {
-          rootMessages.push(msg);
+      if (!linkedIds.has(msg.id) && msg.phase === phaseNum) {
+        // If it responds to something in the thread, add it
+        if (msg.respondsTo && thread.find(t => t.id === msg.respondsTo)) {
+          thread.push(msg);
         }
-      } else {
-        rootMessages.push(msg);
       }
     });
-
-      // Render tree recursively
-      const renderMessage = (msg: AgentMessage, depth: number = 0): React.ReactNode => {
-        const children = childrenMap.get(msg.id) || [];
-        const hasChildren = children.length > 0;
-        const isConnected = depth > 0 || msg.respondsTo !== undefined;
-
-        // Check if this is a revision - find original
-        const originalMessage = msg.isRevision && msg.originalMessageId
-          ? phaseMessages.find(m => m.id === msg.originalMessageId)
-          : null;
-
-        return (
-          <div key={msg.id} className="relative">
-            {/* Show original and revised side-by-side */}
-            {msg.isRevision && originalMessage ? (
-              <div className={`${depth > 0 ? 'ml-8' : ''} grid grid-cols-2 gap-4`}>
-                <div>
-                  <div className="text-xs text-gray-500 mb-2 font-mono">ORIGINAL</div>
-                  <MessageCard
-                    message={originalMessage}
-                    isConnected={isConnected}
-                    hasChildren={false}
-                  />
-                </div>
-                <div>
-                  <div className="text-xs text-green-400 mb-2 font-mono">REVISED</div>
-                  <MessageCard
-                    message={msg}
-                    isConnected={isConnected}
-                    hasChildren={hasChildren}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className={`${depth > 0 ? 'ml-8' : ''}`}>
-                <MessageCard
-                  message={msg}
-                  isConnected={isConnected}
-                  hasChildren={hasChildren}
-                />
-              </div>
-            )}
-            {hasChildren && (
-              <div className="ml-8 mt-4 space-y-4">
-                {children.map(child => renderMessage(child, depth + 1))}
-              </div>
-            )}
-          </div>
-        );
-      };
-
-    return rootMessages.map(msg => renderMessage(msg));
+    
+    return thread.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
   };
 
-  const sortedPhases = Array.from(phaseGroups.keys()).sort((a, b) => a - b);
+  // Create columns from root messages
+  const columns = rootMessages
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
+    .map((root, index) => ({
+      rootMessage: root,
+      thread: buildThread(root.id, root.phase || 0),
+      phase: root.phase || 0,
+      isLast: index === rootMessages.length - 1,
+    }));
+
+  // Debug: Log message counts
+  React.useEffect(() => {
+    console.log('Total messages:', messages.length);
+    console.log('Root messages:', rootMessages.length);
+    console.log('Code Review messages:', messages.filter(m => m.agent === 'CODE_REVIEW').length);
+    console.log('Audit messages:', messages.filter(m => m.agent === 'AUDIT').length);
+    columns.forEach((col, idx) => {
+      console.log(`Column ${idx} thread size:`, col.thread.length);
+    });
+  }, [messages, rootMessages, columns]);
 
   return (
-    <div className="bg-aegis-bg min-h-full p-6">
-      <div className="max-w-4xl mx-auto space-y-8">
-        {sortedPhases.map(phase => {
-          const phaseMessages = phaseGroups.get(phase)!;
-          return (
-            <div key={phase} className="space-y-4">
-              {/* Phase Header */}
-              <div className="flex items-center gap-4 mb-4">
-                <div className="flex-1 border-t border-gray-700/50"></div>
-                <div className="px-4 py-2 bg-aegis-panel border border-aegis-border rounded-lg">
-                  <span className="text-sm font-bold text-white">Phase {phase}</span>
-                  {currentPhase === phase && (
-                    <span className="ml-2 text-xs text-hedera-accent">(In Progress)</span>
-                  )}
-                </div>
-                <div className="flex-1 border-t border-gray-700/50"></div>
-              </div>
-
-              {/* Phase Messages */}
-              <div className="space-y-4">
-                {buildMessageTree(phaseMessages)}
-              </div>
-            </div>
-          );
-        })}
-
-        {/* Empty State */}
-        {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-64 text-gray-500">
+    <CanvasView>
+      <div className="flex items-start gap-8 min-h-full min-w-max pb-8" ref={boardEndRef}>
+        {columns.length === 0 ? (
+          <div className="flex flex-col items-center justify-center w-full h-64 text-gray-500">
             <p className="text-lg mb-2">No messages yet</p>
             <p className="text-sm">Start a task to see agent collaboration</p>
+            {messages.length > 0 && (
+              <p className="text-xs text-yellow-500 mt-2">
+                Debug: {messages.length} messages found but no root messages
+              </p>
+            )}
           </div>
+        ) : (
+          columns.map((column, index) => (
+            <div key={column.rootMessage.id} className="relative">
+              <PhaseColumn
+                rootMessage={column.rootMessage}
+                thread={column.thread}
+                phase={column.phase}
+                isLast={column.isLast}
+              />
+            </div>
+          ))
         )}
-
-        <div ref={boardEndRef} />
       </div>
-    </div>
+    </CanvasView>
   );
 };
 

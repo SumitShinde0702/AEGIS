@@ -79,3 +79,48 @@ export interface AgentMessage {
   originalMessageId?: string; // For revision cards
   changes?: string; // Highlighted changes in revision
 }
+
+// Thinking Levels System
+export enum ThinkingLevel {
+  STRATEGIC = 'STRATEGIC', // High-level task understanding and goals
+  TACTICAL = 'TACTICAL',   // Phase-level planning and approach
+  OPERATIONAL = 'OPERATIONAL' // Immediate actions and decisions
+}
+
+export interface ThinkingTrace {
+  level: ThinkingLevel;
+  reasoning: string;
+  keyDecisions?: string[];
+  dependencies?: string[]; // Links to other thinking traces
+  timestamp: number;
+}
+
+export interface TaskMemory {
+  taskId: string;
+  taskSummary: string; // Compressed high-level understanding
+  keyDecisions: DecisionNode[];
+  phaseSummaries: Map<number, string>; // Compressed phase context
+  selfCorrections: SelfCorrection[];
+  contextCache?: string; // For Gemini 3 context caching
+  lastUpdated: number;
+}
+
+export interface DecisionNode {
+  id: string;
+  phase: number;
+  decision: string;
+  rationale: string;
+  alternatives: string[];
+  outcome?: string;
+  timestamp: number;
+}
+
+export interface SelfCorrection {
+  id: string;
+  phase: number;
+  originalApproach: string;
+  issue: string;
+  correctedApproach: string;
+  lesson: string;
+  timestamp: number;
+}
